@@ -1,0 +1,1571 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.3" snapToGrid="true">
+  <code><![CDATA[extensions [ bspace ]
+globals [
+                                                           ; base-risk   riesgo base de caer en fraude (deslizador)
+                                                           ; decay-rate  tasa de olvido por tick sin recibir aprendizaje (deslizador)
+                                                           ; training-share porcentaje de la población a la que impacta la formación (deslizador)
+                                                           ; n-attackers número de atacantes que habrá en el sistema (deslizador)
+                                                           ; max-attempts-per-attacker tope máximo de intento por atacante y tick (deslizador)
+                                                           ; attacker-learning-rate velocidad a la que cambia el esfuerzo por aprendizaje del atacante (deslizador)
+                                                           ; p-detection define la probabilidad de detección de los ataques por parte de la policía (deslizador)
+                                                           ; jail-time define la duración de la condena, es decir, cuanto tiempo estarán en la carcel los atacantes pillados por la policía
+  experience-gain-small                                    ; aprendizaje pequeño al detectar amenaza y no caer
+  experience-gain-large                                    ; aprendizaje grande al caer en fraude
+  total-victims                                            ; son las víctimas agregadas por cada tick
+  cumulative-victims                                       ; son las víctimas agregadas de manera acumulada
+  attack-this-tick                                         ; representa el número de ataques en cada tick
+  learning-quality                                         ; learning-quality  eficacia de la formación 
+                                                           ;awareness-intensity: variable para modular el impacto de la sensibilización (deslizador)
+                                                           ; training-intensity: variable para modular el impacto de la formación (deslizador)
+  ema-success-rate                                         ; variable para calcular la media movil de la tasa de éxito y pintarla mejor
+  ema-alpha                                                ; variable para definir la media movil que emplearemos para pintar la tasa de éxito
+  base-payoff-per-success                                  ; befeneficio por víctima lograda
+  cost-per-attempt                                         ; coste de cada intento
+  attempts-per-tick                                        ; total de intentos lanzado por todos los atacantes por tick
+  success-per-tick                                         ; total de éxitos logrados por todos los ataca 
+  ticks-since-last-attack                                  ; cuantos ticks han pasado desde el último ataquentes por tick 
+]
+
+breed [citizens citizen]   ; agente ciudadano
+
+citizens-own [
+  digital-knowledge                                        ; conocimiento digital de los ciudadanos, irá de 0 (analfabeto digital) a 100 (experto digital)
+  victim                                                   ; representa a las víctimas: si el ciudadano ha sufrido un ataque en este tick
+  exposure                                                 ; número de ataques recibidos
+  had-attempt-this-tick                                    ; pregunta si ha habido un intento de ataque en ese ciclo
+]
+
+breed [attackers attacker] ; agente delincuente
+
+attackers-own [
+  effort                                                   ; intensidad de los ataques (de 0 a 1) controla cuantos intentos lanza el atacante por tick
+  attempts                                                 ; intentos en cada tick de este atacante
+  successes                                                ; éxitos en cada tick de este atacante
+  last-payoff                                              ; Beneficio neto de este atacante en ese tick
+  aspiration-payoff                                        ; nivel de beneficio que el atacante considera aceptable, modulará el esfuerzo del atacante
+  payoff-prev                                              ; beneficio de este atacante en el tick anterior
+  jail-until                                               ; es el momento en el que cada atacante encarcelado sale de la carcel
+]
+
+to setup
+  clear-all
+  set-default-parameters
+  setup-citizens
+  setup-attackers
+  reset-ticks
+end
+
+to set-default-parameters
+  set base-risk 0.2                                         ; riesgo base
+  set learning-quality 1                                    ; calidad del aprendizaje
+  ;set awareness-frecuency 1000
+  ;set train-frecuency 1000
+  set experience-gain-small 0.1                            ; experiencia ganada si el ciudadano detecta un ataque sin caer
+  set experience-gain-large 5                               ; experiencia ganada si el ciudadano cae en un fraude
+  set decay-rate 0.05                                       ; tasa de olvido de conocimientos digitales de los ciudadanos
+  set cumulative-victims 0                                  ; victimas acumuladas a 0 de inicio
+ ; set training-shares 0.2                                   ; porcentaje del 20% de la población para las formaciones especializadas
+ ; set max-attempts-per-attacker 6                            máximos intentos por atacante en cada ciclo
+ ; set attacker-learning-rate 0.05                           ; tasa de aprendizaje de los atacantes del 5%
+  set base-payoff-per-success 20                            ; beneficio base por éxito 
+  set cost-per-attempt 4                                    ; coste por cada intento
+  set attempts-per-tick 0                                   ; intentos por ciclo a 0 al inicio       
+  set success-per-tick 0                                    ; éxito de atacante a 0 al inicio
+  ; set awareness-intensity 0.2                             intensidad de la sensibilización a toda la población
+  ;set training-intensity 1.6                               intensidad de la formación especialista
+  set ema-success-rate 0                                    ; parámetros para suavizar la tasa de éxito con media movil
+  set ema-alpha 0.02                                        ; parámetros para suavizar la tasa de éxito con media movil
+  ;set p-detection 0.05                                      ; probabilidad de detección de los atacantes por parte de la policía de un 5%
+  ;set jail-time 100                                         ; tiempo de encarcelamiento de 100 ciclos
+  set ticks-since-last-attack 0                             ; al inicio no hay ataques y esta variable debe estar a 0
+ 
+end
+
+to setup-citizens
+  create-citizens 300 [
+    setxy random-xcor random-ycor                           ; posición aleatoria de los ciudadanos
+    set digital-knowledge random-float 40                   ; conocimiento digital aleatorio de los ciudadanos entre 0 y 40 (sobre 100)
+    set victim false                                        ; no hay victimas al inicio
+    set exposure 0                                          ; no hay exposición al inicio
+    set had-attempt-this-tick false                         ; nuevo parámetro que preguntará si hubo intento o no al ciudadano en ese tick                           
+    set shape "person"                                      ; definimos a los ciudadanos con el icono de personas
+    set size 1                                              ; tamaño del icono de personas
+    recolor                                                 ; pintamos a todos los ciudadanos con escalas de verdes en función de su conocimiento digital
+  ]
+end
+
+to setup-attackers
+  create-attackers n-attackers [
+    setxy random-xcor random-ycor                           ; posición aleatoria de los atacantes
+    set effort 0.5                                          ; esfuerzo de intensidad intermedia
+    set attempts 0                                          ; no hay intentos de ataque al inicio 
+    set successes 0                                         ; no hay exitos al inicio
+    set last-payoff 0                                       ; no hay beneficio al inicio
+    set aspiration-payoff 0                                 ; aspiración inicial neutra, ni gana ni pierde
+    set payoff-prev 0                                       ; no hay beneficio previo al inicio
+    set jail-until 0                                        ; ningun atacante está encarcelado de inicio
+    set shape "bug"                                         ; definimos a los atacantes con el icono de bicho
+    set size 1.2                                            ; tamaño del icono de personas
+    set color red                                           ; pintamos a todos los atacantes de rojo
+  ]
+end
+
+to go
+   set total-victims 0
+   ask citizens [
+    set victim false
+    set had-attempt-this-tick false
+    decay-digital-knowledge                                ; olvido para todos los ciudadanos
+  ]
+  attackers-act                                            ; nuevo procedimiento de ataque endogeno                            
+  ask citizens [recolor]
+  tick
+  
+  let r 0
+  if attempts-per-tick > 0 [
+    set r total-victims / attempts-per-tick
+  ]
+  set ema-success-rate ((1 - ema-alpha) * ema-success-rate + ema-alpha * r)
+end
+
+to attempt-fraud-new [target new-base-risk]                ; evalua un intento de fraude sobre target usando un riesgo base efectivo
+    ask target [
+    set had-attempt-this-tick true                         ; hubo intento en este tick
+    set exposure exposure + 1                              ; aumenta la exposición
+      
+    let knowledge-factor digital-knowledge / 100                 ; normalizamos el conocimiento digital de 0 a 1
+    let p-fall range01 (new-base-risk * (1 - knowledge-factor))  ; calcula la probabilidad de caer con el nuevo riesgo base efectivo
+
+    ifelse random-float 1 < p-fall [                       ; cae en fraude, se marca como victima, aumenta contadores y el aprendizaje es alto
+     set victim true
+     set total-victims total-victims + 1
+     set cumulative-victims cumulative-victims + 1
+     learn-from-failure
+][                                                         ; detecta el fraude, aprendizaje bajo por detección
+  learn-from-detection                                     
+  ]
+]
+end
+
+to learn-from-detection
+  set digital-knowledge range100 (digital-knowledge + experience-gain-small)
+end
+
+to learn-from-failure
+  set digital-knowledge range100 (digital-knowledge + experience-gain-large)
+end
+
+to decay-digital-knowledge      ; olvido
+    if not victim [
+    set digital-knowledge range100 (digital-knowledge - decay-rate)
+  ]
+end
+
+to attackers-act
+  set attempts-per-tick 0
+  set success-per-tick 0
+  ask attackers [
+    set attempts 0
+    set successes 0
+    set effort max list effort 0.05
+    set last-payoff 0  
+  ]
+  ask attackers with [ticks >= jail-until][                    ; actua solo si no está en la carcel, solo atacantes no pillados por la policía
+    set attempts 0                                             ; traduce la intensidad de los ataques a un numero de intento concreto topado por el valor máximo
+    repeat max-attempts-per-attacker [
+      if random-float 1 < effort [set attempts attempts + 1]
+    ]  
+    set attempts-per-tick attempts-per-tick + attempts        ; aumenta los intentos por tick
+    repeat attempts [         ;bucle de intentos
+      let target one-of citizens             ;elige victimas aleatorias (no incorpora selección de victima aún)
+      if target != nobody [
+        attempt-fraud-new target base-risk
+        if [victim] of target [              ; si el ciudadano fue victima aumenta el éxito del atacante y del sistema
+          set successes successes + 1
+          set success-per-tick success-per-tick + 1
+          police-act                     ; intervención policial probabilítica
+        ]
+      ]
+    ]
+    set last-payoff (successes * base-payoff-per-success) - (attempts * cost-per-attempt)                                    ; beneficio neto simple del tick: beneficio por éxito menos coste por intento 
+    let aspiration-alpha 0.1                                                                                                 ; velocidad de actualización de la aspiración
+    let aspiration-drift 0.01                                                                                                ; para que la aspiración suba un poco
+    set aspiration-payoff aspiration-payoff + aspiration-alpha * (payoff-prev - aspiration-payoff) + aspiration-drift
+    ifelse payoff-prev > aspiration-payoff [                                                                                 ; Aprendizaje del attacker si le va bien (beneficio positivo) sube la intensidad del ataque (effort), si no, la baja
+      set effort range01 (effort + attacker-learning-rate)
+      set aspiration-payoff aspiration-payoff + 0.01 * (last-payoff - aspiration-payoff)
+    ][
+      set effort range01 (effort - attacker-learning-rate)
+    ]
+    set payoff-prev last-payoff
+  ]
+end
+
+to awareness-citizens
+  ask citizens [
+      let gain learning-quality * awareness-intensity * (100 - digital-knowledge)     ; gain es la ganancia por sensibilización, modulada por la calidad, un multiplicador de intensidad y el conocimiento digital previo
+      set digital-knowledge range100 (digital-knowledge + gain)
+    ]
+end
+
+to awareness-citizens-periodic
+  if ticks > 0 and ticks mod awareness-frecuency = 0 [
+  awareness-citizens
+]
+end
+
+to train-selected
+  let n-trainees round (training-shares * count citizens)
+  let trainees n-of n-trainees citizens
+  ask trainees [
+     let gain learning-quality * training-intensity * (100 - digital-knowledge)       ; gain es la ganancia por formación, modulada por la calidad, un multiplicador de intensidad y el conocimiento digital previo
+     set digital-knowledge range100 (digital-knowledge + gain)
+  ]
+end
+
+to train-selected-periodic
+  if ticks > 0 and ticks mod train-frecuency = 0 [
+  train-selected
+]
+end
+to police-act                                                                        ; se ejecutará dentro del procedimiento de los atacantes por lo que se preguntará allí.
+  if ticks < jail-until [stop]
+  if random-float 1 < p-detection [
+    set jail-until ticks + jail-time
+  ]
+end
+    
+to-report range01 [x]
+  report max list 0 (min list 1 x)
+end
+
+to-report range100 [x]
+  report max list 0 (min list 100 x)
+end
+
+to-report vulnerability-index
+  report count citizens with [digital-knowledge < 20] / count citizens
+end
+
+to-report expert-index
+  report count citizens with [digital-knowledge > 70] / count citizens
+end
+
+to-report attackers-jail
+  report count attackers with [ticks < jail-until]
+end
+
+to-report attackers-free
+  report count attackers with [ticks >= jail-until]
+end
+
+to recolor
+  set color scale-color green digital-knowledge 0 100
+end
+
+]]></code>
+  <widgets>
+    <view x="330" wrappingAllowedX="true" y="65" frameRate="30.0" minPycor="-16" height="479" showTickCounter="true" patchSize="14.4" fontSize="10" wrappingAllowedY="true" width="479" tickCounterLabel="ticks" maxPycor="16" updateMode="1" maxPxcor="16" minPxcor="-16"></view>
+    <button x="215" y="50" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="75">go</button>
+    <button x="133" y="50" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="70">go
+</button>
+    <slider x="40" step="1" y="105" max="70" width="250" display="n-attackers" height="50" min="20" direction="Horizontal" default="40.0" variable="n-attackers"></slider>
+    <slider x="40" step="1" y="170" max="10" width="250" display="max-attempts-per-attacker" height="50" min="0" direction="Horizontal" default="6.0" variable="max-attempts-per-attacker"></slider>
+    <slider x="40" step="0.01" y="240" max="0.3" width="250" display="attacker-learning-rate" height="50" min="0" direction="Horizontal" default="0.05" variable="attacker-learning-rate"></slider>
+    <plot x="850" autoPlotX="true" yMax="10.0" autoPlotY="true" y="35" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="245" display="Intentos por ticks">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot attempts-per-tick</update>
+      </pen>
+    </plot>
+    <plot x="1110" autoPlotX="true" yMax="10.0" autoPlotY="true" y="35" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="245" display="Victimas en cada tick">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot ifelse-value (ticks = 0)
+[ 0 ][ cumulative-victims / ticks ]</update>
+      </pen>
+    </plot>
+    <plot x="850" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="Con.dig.medio" y="225" xMin="0.0" height="340" legend="false" xMax="10.0" yMin="0.0" width="440" xAxis="ticks" display="Conocimiento digital medio">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-955883" legend="true">
+        <setup></setup>
+        <update>plot mean [digital-knowledge] of citizens</update>
+      </pen>
+    </plot>
+    <plot x="1300" autoPlotX="true" yMax="1.0" autoPlotY="true" y="225" xMin="0.0" height="165" legend="false" xMax="10.0" yMin="0.0" width="210" display="Índice de vulnerabilidad">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update><![CDATA[plot (count citizens with [digital-knowledge < 20] / count citizens)]]></update>
+      </pen>
+    </plot>
+    <plot x="1300" autoPlotX="true" yMax="1.0" autoPlotY="true" y="400" xMin="0.0" height="165" legend="false" xMax="10.0" yMin="0.0" width="210" display="Índice de expertos">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update><![CDATA[plot (count citizens with [digital-knowledge > 70] / count citizens)]]></update>
+      </pen>
+    </plot>
+    <button x="300" y="555" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="125" display="Formación Selectiva">train-selected</button>
+    <button x="500" y="20" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="66" display="Tri-color"><![CDATA[ask citizens [
+    ifelse digital-knowledge < 20 
+    [set color grey]
+    [ifelse digital-knowledge < 70 
+      [set color yellow]
+      [set color green] ]
+      ]]]></button>
+    <button x="585" y="20" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="60" display="Recolor">ask citizens
+[ set color scale-color green digital-knowledge 0 100]</button>
+    <button x="142" y="558" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="150" display="Sensibilización periódica">awareness-citizens-periodic</button>
+    <plot x="850" autoPlotX="true" yMax="0.2" autoPlotY="true" y="570" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="-0.2" width="230" display="Beneficio por intento">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update><![CDATA[plot (ifelse-value (attempts-per-tick > 0) 
+[ sum [last-payoff] of attackers / attempts-per-tick] 
+[0])]]></update>
+      </pen>
+    </plot>
+    <plot x="1090" autoPlotX="true" yMax="0.2" autoPlotY="true" y="570" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="-0.2" width="230" display="Payoff vs Aspiration">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="payoff" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot mean [last-payoff] of attackers</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="aspiration" color="-955883" legend="true">
+        <setup></setup>
+        <update>plot mean [aspiration-payoff] of attackers</update>
+      </pen>
+    </plot>
+    <plot x="1329" autoPlotX="true" yMax="10.0" autoPlotY="true" y="570" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="Atacantes encarcelados vs activos">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-2674135" legend="true">
+        <setup></setup>
+        <update><![CDATA[plot count attackers with [ticks < jail-until]]]></update>
+      </pen>
+      <pen interval="1.0" mode="0" display="pen-1" color="-1184463" legend="true">
+        <setup></setup>
+        <update><![CDATA[plot count attackers with [ticks >= jail-until]]]></update>
+      </pen>
+    </plot>
+    <monitor x="1570" precision="4" y="635" height="46" fontSize="11" display="% attackers encarcelados" width="166" sizeVersion="0"><![CDATA[100 * (count attackers with [ticks < jail-until]) / count attackers]]></monitor>
+    <slider x="600" step="0.01" y="610" max="0.3" width="215" display="p-detection" height="50" min="0" direction="Horizontal" default="0.05" variable="p-detection"></slider>
+    <slider x="600" step="1" y="666" max="1000" width="215" display="jail-time" height="50" min="0" direction="Horizontal" default="100.0" variable="jail-time"></slider>
+    <button x="435" y="556" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="150" display="Formación periódica">train-selected-periodic</button>
+    <button x="600" y="558" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="105" display="Redada Policial">ask attackers [
+    set p-detection 0.2
+    police-act]</button>
+    <button x="709" y="558" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="105" display="Fin Redada">ask attackers [
+    set p-detection 0.05
+    police-act]</button>
+    <slider x="300" step="0.01" y="610" max="1" width="285" display="training-shares" height="50" min="0" direction="Horizontal" default="0.2" variable="training-shares"></slider>
+    <slider x="300" step="100" y="669" max="3000" width="280" display="train-frecuency" height="50" min="100" direction="Horizontal" default="1000.0" variable="train-frecuency"></slider>
+    <slider x="40" step="0.01" y="305" max="1" width="250" display="base-risk" height="50" min="0" direction="Horizontal" default="0.2" variable="base-risk"></slider>
+    <slider x="40" step="0.01" y="370" max="1" width="250" display="decay-rate" height="50" min="0" direction="Horizontal" default="0.05" variable="decay-rate"></slider>
+    <slider x="40" step="100" y="612" max="3000" width="251" display="awareness-frecuency" height="50" min="1" direction="Horizontal" default="1000.0" variable="awareness-frecuency"></slider>
+    <button x="45" y="50" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="75">setup
+</button>
+    <monitor x="1625" precision="17" y="85" height="45" fontSize="11" display="Victimas en cada tick" width="140" sizeVersion="0">total-victims</monitor>
+    <monitor x="1625" precision="17" y="35" height="45" fontSize="11" display="Intentos por tick" width="140" sizeVersion="0">attempts-per-tick</monitor>
+    <monitor x="1625" precision="4" y="135" height="45" fontSize="11" display="Media Victimas por tick" width="140" sizeVersion="0">cumulative-victims / ticks</monitor>
+    <plot x="1365" autoPlotX="true" yMax="10.0" autoPlotY="true" y="35" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="240" display="Victimas acumuladas">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot cumulative-victims</update>
+      </pen>
+    </plot>
+    <monitor x="1580" precision="4" y="505" height="46" fontSize="11" display="Tasa éxito ataque" width="136" sizeVersion="0">ema-success-rate</monitor>
+    <monitor x="1580" precision="4" y="455" height="46" fontSize="11" display="Tasa éxito ataque (acc)" width="136" sizeVersion="0">cumulative-victims / (sum [exposure] of citizens)</monitor>
+    <plot x="1520" autoPlotX="true" yMax="0.2" autoPlotY="true" y="260" xMin="0.0" height="190" legend="false" xMax="10.0" yMin="0.0" width="240" display="Tasa de éxito">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot ema-success-rate</update>
+      </pen>
+    </plot>
+    <monitor x="1625" precision="17" y="185" height="45" fontSize="11" display="Víctimas acumuladas" width="140" sizeVersion="0">cumulative-victims</monitor>
+    <monitor x="880" precision="4" y="460" height="45" fontSize="11" display="Conocimiento Digital medio" width="165" sizeVersion="0">mean [digital-knowledge] of citizens</monitor>
+    <button x="40" y="558" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="95" display="Sensibilización">awareness-citizens</button>
+    <slider x="40" step="0.05" y="675" max="0.5" width="251" display="awareness-intensity" height="50" min="0" direction="Horizontal" default="0.2" variable="awareness-intensity"></slider>
+    <slider x="295" step="0.2" y="725" max="3" width="285" display="training-intensity" height="50" min="0" direction="Horizontal" default="0.8" variable="training-intensity"></slider>
+  </widgets>
+  <info>## WHAT IS IT?
+
+(a general understanding of what the model is trying to show or explain)
+
+## HOW IT WORKS
+
+(what rules the agents use to create the overall behavior of the model)
+
+## HOW TO USE IT
+
+(how to use the model, including a description of each of the items in the Interface tab)
+
+## THINGS TO NOTICE
+
+(suggested things for the user to notice while running the model)
+
+## THINGS TO TRY
+
+(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+
+## EXTENDING THE MODEL
+
+(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+
+## NETLOGO FEATURES
+
+(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+
+## RELATED MODELS
+
+(models in the NetLogo Models Library and elsewhere which are of related interest)
+
+## CREDITS AND REFERENCES
+
+(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)
+</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="Sensibilidad atacantes" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="5000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="n-attackers">
+          <value value="20"></value>
+          <value value="30"></value>
+          <value value="40"></value>
+          <value value="50"></value>
+          <value value="60"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad intentos máximos" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="5000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="max-attempts-per-attacker">
+          <value value="3"></value>
+          <value value="6"></value>
+          <value value="9"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad awareness-frecuency" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+awareness-citizens-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="awareness-frecuency">
+          <value value="500"></value>
+          <value value="1000"></value>
+          <value value="1500"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad awareness-intensity" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+awareness-citizens-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="awareness-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="awareness-intensity">
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad train-frecuency" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="500"></value>
+          <value value="1000"></value>
+          <value value="1500"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad training-intensity" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="training-intensity">
+          <value value="0.8"></value>
+          <value value="1.6"></value>
+          <value value="3.2"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad training-shares" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="training-intensity">
+          <value value="1.6"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="training-shares">
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Sensibilidad detección policial" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="5000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="p-detection">
+          <value value="0"></value>
+          <value value="0.05"></value>
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Carrera armamentística" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="training-intensity">
+          <value value="0.8"></value>
+          <value value="1.6"></value>
+          <value value="3.2"></value>
+          <value value="6.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="attacker-learning-rate">
+          <value value="0.05"></value>
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Carrera armamentística (policía)" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="p-detection">
+          <value value="0.05"></value>
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="attacker-learning-rate">
+          <value value="0.05"></value>
+          <value value="0.1"></value>
+          <value value="0.2"></value>
+          <value value="0.4"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="Todas las políticas" repetitions="20" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="8000">
+      <setup>setup</setup>
+      <go>go
+train-selected-periodic
+awareness-citizens-periodic</go>
+      <metrics>
+        <metric>mean [digital-knowledge] of citizens</metric>
+        <metric>cumulative-victims</metric>
+        <metric>ema-success-rate</metric>
+        <metric>vulnerability-index</metric>
+        <metric>expert-index</metric>
+        <metric>attackers-jail</metric>
+        <metric>attackers-free</metric>
+        <metric>mean [last-payoff] of attackers</metric>
+        <metric>mean [aspiration-payoff] of attackers</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="train-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="awareness-frecuency">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="p-detection">
+          <value value="0.2"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="attacker-learning-rate">
+          <value value="0.05"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>
